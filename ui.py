@@ -1,6 +1,7 @@
 import sys
 from PyQt6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, QInputDialog, QMessageBox
+    QApplication, QWidget, QVBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, QInputDialog, QMessageBox,
+    QLineEdit
 )
 from PyQt6.QtCore import Qt
 from database import Database
@@ -10,7 +11,9 @@ from encryption import Encryption
 class PasswordManagerUI(QWidget):
     def __init__(self):
         super().__init__()
-        self.master_password, ok = QInputDialog.getText(self, "Мастер-пароль", "Введите мастер-пароль:")
+        self.master_password, ok = QInputDialog.getText(
+            self, "Мастер-пароль", "Введите мастер-пароль:", QLineEdit.EchoMode.Password
+        )
         if not ok or not self.master_password:
             sys.exit()
 
@@ -45,6 +48,10 @@ class PasswordManagerUI(QWidget):
         btn_show.clicked.connect(self.show_password)
         self.layout.addWidget(btn_show)
 
+        btn_edit_password = QPushButton("Изменить пароль")
+        btn_edit_password.clicked.connect(self.edit_password)
+        self.layout.addWidget(btn_edit_password)
+
         btn_login = QPushButton("Войти")
         btn_login.clicked.connect(self.login)
         self.layout.addWidget(btn_login)
@@ -65,7 +72,8 @@ class PasswordManagerUI(QWidget):
                 login_item.setFlags(Qt.ItemFlag.ItemIsEditable | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
                 self.table.setItem(row, 1, login_item)
                 password_item = QTableWidgetItem("••••••••")
-                password_item.setFlags(Qt.ItemFlag.ItemIsEditable | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+                password_item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+                password_item.setData(Qt.ItemDataRole.UserRole, entry["password"])
                 self.table.setItem(row, 2, password_item)
 
     def add_entry(self):
@@ -73,21 +81,38 @@ class PasswordManagerUI(QWidget):
         if not ok: return
         login, ok = QInputDialog.getText(self, "Login", "Введите логин:")
         if not ok: return
-        password, ok = QInputDialog.getText(self, "Password", "Введите пароль:")
+        password, ok = QInputDialog.getText(
+            self, "Password", "Введите пароль:", QLineEdit.EchoMode.Password
+        )
         if not ok: return
+        if not url.strip() or not login.strip() or not password:
+            QMessageBox.warning(self, "Ошибка", "URL, логин и пароль не должны быть пустыми.")
+            return
         self.db.add_entry(url, login, password)
         self.db.save()
         self.refresh_table()
 
     def save_changes(self):
-        # Обновляем db.data на основе таблицы
-        self.db.data.clear()  # Очищаем и перезаписываем
+        # Обновляем db.data на основе таблицы и сохраняем скрытые пароли, если пользователь их не менял.
+        new_data = {}
         for row in range(self.table.rowCount()):
             url = self.table.item(row, 0).text()
             login = self.table.item(row, 1).text()
-            password = self.table.item(row, 2).text()
-            if url and login and password != "••••••••":  # Игнорируем если пароль не изменили
-                self.db.add_entry(url, login, password)
+            password_item = self.table.item(row, 2)
+            password_text = password_item.text()
+            original_password = password_item.data(Qt.ItemDataRole.UserRole)
+
+            if password_text == "••••••••":
+                password = original_password
+            else:
+                password = password_text
+
+            if url and login and password:
+                if url not in new_data:
+                    new_data[url] = []
+                new_data[url].append({"login": login, "password": password})
+
+        self.db.data = new_data
         self.db.save()
         self.refresh_table()
         QMessageBox.information(self, "Сохранение", "Изменения сохранены!")
@@ -98,7 +123,20 @@ class PasswordManagerUI(QWidget):
             return
         url = self.table.item(row, 0).text()
         login = self.table.item(row, 1).text()
-        self.db.remove_entry(url, row)  # Используем index=row, но адаптируем если нужно
+        password_item = self.table.item(row, 2)
+        password = password_item.data(Qt.ItemDataRole.UserRole)
+        # Ищем индекс внутри конкретного URL, а не в глобальной таблице.
+        entry_index = None
+        for i, entry in enumerate(self.db.get_entries(url)):
+            if entry["login"] == login and entry["password"] == password:
+                entry_index = i
+                break
+
+        if entry_index is None:
+            QMessageBox.warning(self, "Удаление", "Не удалось определить запись для удаления.")
+            return
+
+        self.db.remove_entry(url, entry_index)
         self.db.save()
         self.refresh_table()
         QMessageBox.information(self, "Удаление", "Запись удалена!")
@@ -111,6 +149,26 @@ class PasswordManagerUI(QWidget):
         for entry in self.db.get_entries(url):
             if entry["login"] == login:
                 QMessageBox.information(self, "Пароль", entry["password"])
+
+    def edit_password(self):
+        row = self.table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Изменить пароль", "Выберите запись для изменения.")
+            return
+
+        current_password = self.table.item(row, 2).data(Qt.ItemDataRole.UserRole)
+        new_password, ok = QInputDialog.getText(
+            self, "Изменить пароль", "Введите новый пароль:", QLineEdit.EchoMode.Password, current_password
+        )
+        if not ok:
+            return
+        if not new_password:
+            QMessageBox.warning(self, "Изменить пароль", "Пароль не должен быть пустым.")
+            return
+
+        password_item = self.table.item(row, 2)
+        password_item.setText("••••••••")
+        password_item.setData(Qt.ItemDataRole.UserRole, new_password)
 
     def login(self):
         row = self.table.currentRow()
